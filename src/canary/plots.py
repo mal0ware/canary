@@ -77,14 +77,12 @@ def fig_breaches(res: Results, out: Path, alpha: float = 0.01) -> None:
         ax.set_title(title, fontsize=10, loc="left")
         _style(ax)
         ax.grid(axis="y", visible=False)
-    axes[0].text(
-        100.0 * alpha, 3.45, " stated: 1%", color=INK_2, fontsize=8, va="bottom", ha="left"
-    )
     days = int(t["days"].iloc[0])
     first = str(res.frames["var_us"].index[0])[:4]
     last = str(res.frames["var_us"].index[-1])[:4]
     fig.suptitle(
-        f"1% one-day value at risk, US stock market, {first} to {last} ({days:,} days)",
+        f"1% one-day value at risk, US stock market, {first} to {last} ({days:,} days). "
+        "Dashed line: the stated 1%.",
         fontsize=11,
         color=INK,
         x=0.01,
@@ -151,10 +149,19 @@ def fig_power(res: Results, out: Path) -> None:
     axes[0].set_title("Kupiec: is the rate 1%?", fontsize=10, loc="left")
     axes[1].set_xlabel("True chance of a breach the day after a breach (%)")
     axes[1].set_title("Christoffersen: are breaches independent?", fontsize=10, loc="left")
-    axes[1].legend(frameon=False, fontsize=9, labelcolor=INK_2, title="Sample")
     for ax in axes:
         ax.set_ylim(0, 102)
         _style(ax)
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(
+        handles,
+        labels,
+        loc="outside lower center",
+        ncols=len(labels),
+        frameon=False,
+        fontsize=9,
+        labelcolor=INK_2,
+    )
     _save(fig, out)
 
 
@@ -179,19 +186,28 @@ def fig_vol(res: Results, out: Path) -> None:
     _save(fig, out)
 
 
-def fig_vrp(res: Results, out: Path) -> None:
-    """Monthly variance risk premium, forward version."""
+def fig_vrp(res: Results, out: Path, floor: float = -1500.0) -> None:
+    """Monthly variance risk premium, forward version. Months below ``floor`` are clipped."""
     table = res.frames["vrp"]
-    fig, ax = plt.subplots(figsize=(9.6, 3.6), layout="constrained")
+    fig, ax = plt.subplots(figsize=(9.6, 3.8), layout="constrained")
     x = pd.DatetimeIndex(table.index)
     y = table["vrp_forward"].to_numpy(dtype=np.float64)
-    ax.bar(x, y, width=25, color=MODEL_COLORS["hs"], linewidth=0)
+    ax.bar(x, np.maximum(y, floor), width=25, color=MODEL_COLORS["hs"], linewidth=0)
     ax.axhline(0.0, color=AXIS, linewidth=1.0)
-    ax.set_yscale("symlog", linthresh=500)
-    ax.set_ylabel("VIX² minus realised variance\n(annualised, percent², symlog)")
+    ax.set_ylim(floor, max(float(y.max()) * 1.05, 100.0))
+    ax.set_ylabel("VIX² minus realised variance\n(annualised, percent²)")
+    below = y < floor
+    note = ""
+    if below.any():
+        worst = int(np.argmin(y))
+        note = (
+            f"\n{int(below.sum())} months are cut off at {floor:,.0f}; "
+            f"the lowest is {y[worst]:,.0f} ({x[worst]:%b %Y})."
+        )
     ax.set_title(
-        "Variance risk premium by month: implied variance minus what the next 21 days delivered",
-        fontsize=11,
+        "Variance risk premium by month: VIX² minus the variance of the next 21 trading days."
+        + note,
+        fontsize=9.5,
         loc="left",
     )
     _style(ax)

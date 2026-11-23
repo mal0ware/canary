@@ -1,0 +1,3 @@
+returns,first_month,last_month,version,months,mean,median,t_stat,share_positive,min,min_month
+market,1990-01,2026-08,vrp_trailing,440,110.244,113.855,5.84543,0.868182,-5822.52,2020-03
+market,1990-01,2026-08,vrp_forward,440,100.206,121.766,4.02221,0.838636,-7269.99,2020-02

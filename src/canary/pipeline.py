@@ -33,7 +33,7 @@ class Config:
     vol_refit: int = 1
     har_lag_sets: tuple[tuple[int, int, int], ...] = ((1, 5, 22), (1, 7, 30))
     power_reps: int = 2000
-    power_sizes: tuple[int, ...] = (250, 1000, 2500)
+    power_sizes: tuple[int, ...] = (250, 1000)
     power_rates: tuple[float, ...] = (0.005, 0.0075, 0.01, 0.0125, 0.015, 0.02, 0.03)
     power_pi11: tuple[float, ...] = (0.01, 0.05, 0.10, 0.20, 0.40)
     seed: int = 20261123
@@ -229,6 +229,25 @@ def vol_forecast_study(daily: pd.DataFrame, config: Config) -> tuple[pd.DataFram
     return pd.DataFrame(rows), frame
 
 
+def vol_forecast_by_year(frame: pd.DataFrame) -> pd.DataFrame:
+    """Mean QLIKE on realised variance by calendar year, for GARCH and the first HAR lag set."""
+    har_col = next(c for c in frame.columns if c.startswith("har_"))
+    rv = frame["rv"].to_numpy(dtype=np.float64)
+    loss = pd.DataFrame(
+        {
+            "qlike_garch": vf.qlike(rv, frame["garch"].to_numpy(dtype=np.float64)),
+            "qlike_har": vf.qlike(rv, frame[har_col].to_numpy(dtype=np.float64)),
+        },
+        index=frame.index,
+    )
+    year = pd.DatetimeIndex(loss.index).year
+    out = loss.groupby(year).mean()
+    out.insert(0, "days", loss.groupby(year).size())
+    out["mean_diff_garch_minus_har"] = out["qlike_garch"] - out["qlike_har"]
+    out.index.name = "year"
+    return out.reset_index()
+
+
 def vrp_study(inputs: Inputs) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Variance risk premium. Returns (summary, monthly table, proxy check)."""
     log_ret = pd.Series(np.log1p(inputs.market.to_numpy()), index=inputs.market.index)
@@ -327,6 +346,7 @@ def run(inputs: Inputs, config: Config) -> Results:
 
     vol_table, vol_frame = vol_forecast_study(inputs.btc_daily, config)
     res.tables["vol_forecast"] = vol_table
+    res.tables["vol_forecast_by_year"] = vol_forecast_by_year(vol_frame)
     res.frames["vol"] = vol_frame
 
     summary, monthly, check = vrp_study(inputs)

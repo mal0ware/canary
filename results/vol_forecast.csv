@@ -1,0 +1,5 @@
+har_lags,proxy,days,qlike_garch,qlike_har,mean_diff_garch_minus_har,dm_stat_lag0,dm_p_lag0,bartlett_lag,dm_stat_bartlett,dm_p_bartlett,mean_forecast_over_mean_proxy_garch,mean_forecast_over_mean_proxy_har,har_forecasts_floored
+1-5-22,rv,2335,0.383311,0.35173,0.0315815,3.99829,6.3803e-05,8,3.55471,0.000378392,1.03091,1.08757,0
+1-5-22,ret2,2335,1.85764,1.82928,0.0283615,3.14083,0.00168471,8,3.20379,0.00135631,1.20867,1.2751,0
+1-7-30,rv,2335,0.383311,0.342913,0.0403983,5.10915,3.23604e-07,8,4.44891,8.63077e-06,1.03091,1.07891,0
+1-7-30,ret2,2335,1.85764,1.821,0.0366439,3.99175,6.55874e-05,8,4.08676,4.37445e-05,1.20867,1.26495,0

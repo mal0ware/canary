@@ -1,0 +1,5 @@
+file,sha256,rows_used,first,last,note
+F-F_Research_Data_Factors_daily_CSV.zip,96c23b88e651cbfff3740a53f8225e59ee39893371e96385a1d8125ec2cd9c89,26338,1926-07-01,2026-09-30,
+VIX_History.csv,2a3b180ffb268b7805c17567c0ac7787c74898b0d99f62f550be67eafffd1c16,9284,1990-01-02,2026-09-30,
+SP500.csv,0b7fbb7a0acd52b9cc2b06d7494f0ad648ab5b629e69b51ca53254bf76ad6b8e,2474,2016-11-25,2026-09-30,
+btcusdt_5m,bebf0cb557028e65fbcbbe8f06e264a6ace86468acfdd9986f0c08c70cc014c3,3335,2017-08-18,2026-10-31,966793 five-minute bars; 27 days dropped for missing bars; 6 kept days rescaled; sha256 is of the archive hashes in name order

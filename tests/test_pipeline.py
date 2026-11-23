@@ -16,6 +16,7 @@ TINY = pipeline.Config(
     vol_window=250,
     vol_refit=50,
     power_reps=50,
+    mc_reps=50,
     power_sizes=(250,),
     power_rates=(0.01, 0.02),
     power_pi11=(0.01, 0.2),

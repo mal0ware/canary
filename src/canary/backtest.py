@@ -233,3 +233,52 @@ def followed_within(hits: npt.ArrayLike, days: int = 5) -> tuple[float, float]:
     later = csum[idx + days + 1] - csum[idx + 1]
     rate = float(h.mean())
     return float(np.mean(later > 0)), 1.0 - (1.0 - rate) ** days
+
+
+def _lr_ind_from_counts(
+    n00: FloatArray, n01: FloatArray, n10: FloatArray, n11: FloatArray
+) -> FloatArray:
+    """LR_ind for arrays of transition counts."""
+    with np.errstate(invalid="ignore", divide="ignore"):
+        pi01 = np.where(n00 + n01 > 0, n01 / (n00 + n01), 0.0)
+        pi11 = np.where(n10 + n11 > 0, n11 / (n10 + n11), 0.0)
+    pi = (n01 + n11) / (n00 + n01 + n10 + n11)
+    pooled = xlogy(n01 + n11, pi) + xlogy(n00 + n10, 1.0 - pi)
+    markov = xlogy(n01, pi01) + xlogy(n00, 1.0 - pi01) + xlogy(n11, pi11) + xlogy(n10, 1.0 - pi11)
+    out: FloatArray = np.maximum(-2.0 * (pooled - markov), 0.0)
+    return out
+
+
+def independence_monte_carlo(
+    hits: npt.ArrayLike, reps: int, rng: np.random.Generator, chunk: int = 500
+) -> tuple[float, float]:
+    """Simulated p-values for independence, from independent breaches at the observed rate.
+
+    Returns ``(p_lr, p_pairs)``. ``p_lr`` is the share of simulated series whose
+    LR_ind is at least the observed one. ``p_pairs`` is the share with at least
+    as many consecutive-breach pairs (n11) as observed, a one-sided test against
+    clustering. Both count the observed series as one draw.
+
+    The chi-squared(1) p-value is unreliable when few pairs are expected: a
+    series with no pairs at all can reject, because it has fewer than chance.
+    """
+    h = _as_hits(hits)
+    n = h.size
+    rate = float(h.mean())
+    observed = christoffersen(h, min(max(rate, 1e-9), 1.0 - 1e-9))
+    ge_lr = 0
+    ge_pairs = 0
+    done = 0
+    while done < reps:
+        m = min(chunk, reps - done)
+        sim = rng.random((n, m)) < rate
+        prev, curr = sim[:-1], sim[1:]
+        n11 = np.sum(prev & curr, axis=0).astype(np.float64)
+        n01 = np.sum(~prev & curr, axis=0).astype(np.float64)
+        n10 = np.sum(prev & ~curr, axis=0).astype(np.float64)
+        n00 = (n - 1) - n11 - n01 - n10
+        lr = _lr_ind_from_counts(n00, n01, n10, n11)
+        ge_lr += int(np.sum(lr >= observed.lr_ind - 1e-12))
+        ge_pairs += int(np.sum(n11 >= observed.n11))
+        done += m
+    return (ge_lr + 1) / (reps + 1), (ge_pairs + 1) / (reps + 1)

@@ -33,6 +33,7 @@ class Config:
     vol_refit: int = 1
     har_lag_sets: tuple[tuple[int, int, int], ...] = ((1, 5, 22), (1, 7, 30))
     power_reps: int = 2000
+    mc_reps: int = 2000
     power_sizes: tuple[int, ...] = (250, 1000)
     power_rates: tuple[float, ...] = (0.005, 0.0075, 0.01, 0.0125, 0.015, 0.02, 0.03)
     power_pi11: tuple[float, ...] = (0.01, 0.05, 0.10, 0.20, 0.40)
@@ -46,6 +47,7 @@ FAST = Config(
     vol_window=300,
     vol_refit=20,
     power_reps=200,
+    mc_reps=200,
     power_sizes=(250, 1000),
 )
 
@@ -75,16 +77,30 @@ class Results:
 
 
 def coverage_rows(
-    forecasts: pd.DataFrame, dataset: str, window: int, alphas: tuple[float, ...]
+    forecasts: pd.DataFrame,
+    dataset: str,
+    window: int,
+    alphas: tuple[float, ...],
+    mc_reps: int = 0,
+    seed: int = 0,
 ) -> list[dict[str, object]]:
-    """One row per model and tail probability: counts, both tests, clustering, shortfall."""
+    """One row per model and tail probability: counts, both tests, clustering, shortfall.
+
+    With ``mc_reps > 0`` the independence test also gets simulated p-values.
+    """
     rows: list[dict[str, object]] = []
+    rng = np.random.default_rng(seed)
     for alpha in alphas:
         for model in var.MODELS:
             hits = var.breaches(forecasts, model, alpha)
             k = bt.kupiec(hits, alpha)
             c = bt.christoffersen(hits, alpha)
             within, within_iid = bt.followed_within(hits, 5)
+            p_mc, p_pairs = (
+                bt.independence_monte_carlo(hits, mc_reps, rng)
+                if mc_reps > 0
+                else (float("nan"), float("nan"))
+            )
             rows.append(
                 {
                     "dataset": dataset,
@@ -102,6 +118,9 @@ def coverage_rows(
                     "pi11": c.pi11,
                     "lr_ind": c.lr_ind,
                     "p_ind": c.p_ind,
+                    "p_ind_simulated": p_mc,
+                    "p_pairs_one_sided": p_pairs,
+                    "expected_n11_if_independent": k.breaches * k.rate,
                     "lr_cc": c.lr_cc,
                     "p_cc": c.p_cc,
                     "followed_within_5d": within,
@@ -322,8 +341,8 @@ def run(inputs: Inputs, config: Config) -> Results:
     res.frames["var_us"] = us
     res.frames["var_btc"] = btc
 
-    rows = coverage_rows(us, "us_market", config.window, config.alphas)
-    rows += coverage_rows(btc, "btc", config.window, config.alphas)
+    rows = coverage_rows(us, "us_market", config.window, config.alphas, config.mc_reps, config.seed)
+    rows += coverage_rows(btc, "btc", config.window, config.alphas, config.mc_reps, config.seed + 1)
     res.tables["var_coverage"] = pd.DataFrame(rows)
     res.tables["var_coverage_by_decade"] = pd.DataFrame(decade_rows(us, 0.01))
 

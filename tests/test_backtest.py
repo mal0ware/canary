@@ -198,3 +198,40 @@ def test_rejects_bad_input() -> None:
         bt.kupiec(np.array([0, 2, 1]), 0.01)
     with pytest.raises(ValueError):
         bt.kupiec(np.array([0, 1]), 1.5)
+
+
+def test_vectorised_lr_ind_matches_scalar() -> None:
+    rng = np.random.default_rng(6)
+    hits = (rng.random(3000) < 0.05).astype(int)
+    c = bt.christoffersen(hits, 0.05)
+    lr = bt._lr_ind_from_counts(
+        np.array([float(c.n00)]),
+        np.array([float(c.n01)]),
+        np.array([float(c.n10)]),
+        np.array([float(c.n11)]),
+    )
+    assert lr[0] == pytest.approx(c.lr_ind, rel=1e-10)
+
+
+def test_monte_carlo_p_values() -> None:
+    rng = np.random.default_rng(7)
+    # Independent breaches: the simulated p-value is not small.
+    iid = (rng.random(4000) < 0.02).astype(int)
+    p_lr, p_pairs = bt.independence_monte_carlo(iid, 500, rng)
+    assert p_lr > 0.05 and p_pairs > 0.05
+    # Clustered breaches: both are at the floor 1 / (reps + 1).
+    clustered = bt.simulate_markov_hits(4000, bt.markov_pi01(0.02, 0.4), 0.4, 1, rng)[:, 0]
+    p_lr, p_pairs = bt.independence_monte_carlo(clustered, 500, rng)
+    assert p_lr == pytest.approx(1 / 501)
+    assert p_pairs == pytest.approx(1 / 501)
+
+
+def test_no_pairs_can_reject_in_a_long_sample() -> None:
+    # 25,000 days at 1% expect about 2.5 pairs. A series with none has fewer than
+    # chance, and the chi-squared p-value falls below 5% although nothing clusters.
+    hits = np.zeros(25000, dtype=int)
+    hits[50::100] = 1
+    res = bt.christoffersen(hits, 0.01)
+    assert res.n11 == 0 and res.p_ind < 0.05
+    _, p_pairs = bt.independence_monte_carlo(hits, 300, np.random.default_rng(8))
+    assert p_pairs == 1.0

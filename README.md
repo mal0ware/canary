@@ -2,7 +2,7 @@
 
 **A risk model said losses this bad happen one day in a hundred. Count the days.**
 
-On 25,338 trading days of the US stock market (November 1929 to September 2026), filtered historical simulation with GARCH was the only one of four models whose 1% limit was breached about 1% of the time: 258 breaches, 1.02%. Plain historical simulation was breached 1.24% of the time, and the two models that assume normal returns about 2%. Every model clustered its breaches. After a breach, the next day was another breach 9.2% of the time for historical simulation and 11.1% for the normal model, against 2.7% for the filtered model, which still fails Christoffersen's independence test at the 5% level (p = 0.024).
+On 25,338 trading days of the US stock market (November 1929 to September 2026), filtered historical simulation with GARCH was the only one of four models whose 1% limit was breached about 1% of the time: 258 breaches, 1.02%. Plain historical simulation was breached 1.24% of the time, and the two models that assume normal returns about 2%. Every model clustered its breaches. After a breach, the next day was another breach 9.2% of the time for historical simulation and 11.1% for the normal model, against 2.7% for the filtered model, which still fails Christoffersen's independence test at the 5% level (p = 0.024, or 0.042 by simulation).
 
 ![Breach rate and next-day breach rate of four 1% value-at-risk models](results/fig1_breaches.png)
 
@@ -43,15 +43,17 @@ Every risk model produces a number. Which ones were right as often as they claim
 
 The two failures separate cleanly. The distribution decides the rate: both normal models were breached twice as often as stated, whether or not they tracked volatility. The volatility model decides the clustering: both GARCH models had next-day rates of 3% to 4%, and both fixed-window models had 9% to 11%.
 
-By decade (`results/fig2_breaches_by_decade.png`), the filtered model's rate stayed between 0.85% and 1.19% in all ten decades and Kupiec's test never rejects it. Historical simulation ran at 1.5% to 2.1% from the 1970s to the 2000s and at 0.7% in the 2010s, when its window still held 2008.
+By decade (`results/fig2_breaches_by_decade.png`), the filtered model's rate stayed between 0.85% and 1.19% in all ten decades and Kupiec's test never rejects it. Historical simulation ran at 1.3% to 2.1% from the 1970s to the 2000s and at 0.7% in the 2010s.
 
-With 500-day and 2,000-day windows the ordering is the same (`results/var_window_sensitivity.csv`). At the 5% limit the normal model's rate is right (4.97%) and its clustering is as bad (15% next-day rate). On 2,335 days of BTC no model fails the independence test, and the power table below says that is what a sample of that size would show for anything but severe clustering.
+With 500-day and 2,000-day windows the ordering is the same (`results/var_window_sensitivity.csv`). At the 5% limit the normal model's rate is right (4.97%) and its breaches still cluster (15% next-day rate against 5%). The filtered model clusters there too: 8.8% next-day, 112 pairs where independence would give 64. On 2,335 days of BTC no model fails the independence test. The power table below says a sample that size detects a 5% next-day rate at the 1% limit less than a third of the time.
 
 ### How much the tests can see
 
 ![Power of the Kupiec and Christoffersen tests at the 1% level](results/fig3_power.png)
 
-Kupiec's test at the 1% level, 5% size, exact from the binomial distribution: with 250 days it rejects a model whose true rate is 2% only 24% of the time, with 1,000 days 78%, and with 25,338 days it rejects a true rate of 1.25% in 96% of samples. The independence test is weaker. Against a 10% chance of a breach the day after a breach it rejects 15% of the time with 250 days, 35% with 1,000 and 63% with 2,335 (2,000 simulations each). A year of data cannot tell these four models apart. A century can.
+Kupiec's test at the 1% level, 5% size, exact from the binomial distribution: with 250 days it rejects a model whose true rate is 2% only 24% of the time, with 1,000 days 78%, and with 25,338 days it rejects a true rate of 1.25% in 96% of samples. The independence test is weaker. Against a 10% chance of a breach the day after a breach it rejects 15% of the time with 250 days, 35% with 1,000 and 63% with 2,335 (2,000 simulations each). A year of data cannot tell these four models apart, and the 97 years used here can.
+
+The independence test has a problem of its own in a long sample at 1%. With 25,338 days it rejected independent breaches 11% of the time, because a series with no consecutive breaches at all has fewer than chance and counts as a rejection. `results/var_coverage.csv` therefore also gives a simulated p-value and a one-sided p-value on the number of consecutive pairs. For the filtered model they are 0.042 and 0.016.
 
 ### GARCH(1,1) against HAR
 
@@ -73,7 +75,8 @@ Over 440 months from January 1990 to August 2026, VIX squared exceeded the varia
 Full detail, formulas and equation numbers are in `PAPER.md`. In brief:
 
 - Kupiec's statistic reproduces 14 of the 16 cells of his Table 2. Two cells differ by 1 and 2 (124 printed, 125 computed; 44 printed, 42 computed). His one-year example, a 26.23% chance that a 2% model shows three or fewer breaches in 250 days, reproduces as 26.22%.
-- GARCH(1,1) estimates match the `arch` package to four decimals on simulated data.
+- GARCH(1,1) estimates match the `arch` package within 0.0005 on simulated data.
+- The variance risk premium over 1990 to 2007 has the same implied leg as Bollerslev, Tauchen and Zhou (33.24 against their 33.23, monthly units) and a larger realised leg (20.24 against 14.93), so a smaller premium (13.0 against 18.3).
 - HAR here is fitted to realised variance. Corsi's regression is on realised volatility, the square root.
 - The realised leg of the variance risk premium uses daily returns of a market proxy. Bollerslev, Tauchen and Zhou use five-minute S&P 500 returns.
 - The journal versions of Kupiec's paper and of the filtered historical simulation paper were not reachable. Their working-paper versions were read.
@@ -107,7 +110,7 @@ The design named the VOLARE archive as a possible source of realised volatility.
 
 ## How it is tested
 
-`uv run pytest` runs 80 tests. The maths was tested before any result was read.
+`uv run pytest` runs 85 tests. The maths was tested before any result was read.
 
 - Independent breaches at the stated rate are rejected by each coverage test about 5% of the time.
 - A Markov chain with the right long-run rate and clustered breaches passes Kupiec's test and fails Christoffersen's.
@@ -142,7 +145,7 @@ PAPER.md           citations, claims tested, comparison with the sources
 
 - A model can pass every backtest and fail in the next crisis. Coverage tests look backward.
 - The headline is one asset: a value-weighted index of US stocks. A portfolio with options, leverage or illiquid positions is a different problem, and nothing here says the filtered model would cover it.
-- The filtered model passed on the rate and still clustered. Seven of its 258 breaches were followed by a breach the next day, where independence would give about 2.6. Christoffersen's test looks one day back only, so the 10% of its breaches followed by another within five days is reported as a count with no test behind it.
+- The filtered model passed on the rate and still clustered. Seven of its 258 breaches were followed by a breach the next day, where independence would give about 2.6, and at the 5% limit the clustering is plain. Christoffersen's test looks one day back only, so the 10% of its breaches followed by another within five days is reported as a count with no test behind it.
 - Expected shortfall has no formal backtest here. The table gives a ratio of realised to forecast loss on breach days.
 - At the 1% level a year of data has little power: 24% against a model that is wrong by a factor of two. The BTC table (2,335 days) and each decade (about 2,500 days) should be read with `results/power_kupiec.csv` beside them.
 - The window (1,000 days) and refit interval (21 days) were fixed before the run. Two other windows were run as a check and are counted in `PAPER.md`. A GARCH with fat-tailed shocks or asymmetry was not tried.

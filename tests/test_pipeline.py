@@ -39,7 +39,7 @@ def test_tables_are_complete(results: pipeline.Results) -> None:
     assert set(cov["model"]) == set(var.MODELS)
     assert (cov["breaches"] == (cov["breach_rate"] * cov["days"]).round()).all()
     assert len(results.tables["vol_forecast"]) == 4  # two lag sets, two proxies
-    assert len(results.tables["vrp_summary"]) == 2
+    assert len(results.tables["vrp_summary"]) == 2  # synthetic data start after 2007
     assert len(results.tables["vrp_proxy_check"]) == 1
 
 

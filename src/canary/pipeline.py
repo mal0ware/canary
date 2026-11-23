@@ -271,10 +271,17 @@ def vrp_study(inputs: Inputs) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]
     """Variance risk premium. Returns (summary, monthly table, proxy check)."""
     log_ret = pd.Series(np.log1p(inputs.market.to_numpy()), index=inputs.market.index)
     table = vrp.vrp_table(inputs.vix, log_ret)
-    summary = vrp.vrp_summary(table)
-    summary.insert(0, "returns", "market")
-    summary.insert(1, "first_month", str(table.index[0])[:7])
-    summary.insert(2, "last_month", str(table.index[-1])[:7])
+    parts = []
+    # The second window is the sample of Bollerslev, Tauchen and Zhou (2009).
+    for sub in (table, table[table.index <= pd.Timestamp("2007-12-31")]):
+        if len(sub) < 2:
+            continue
+        part = vrp.vrp_summary(sub)
+        part.insert(0, "returns", "market")
+        part.insert(1, "first_month", str(sub.index[0])[:7])
+        part.insert(2, "last_month", str(sub.index[-1])[:7])
+        parts.append(part)
+    summary = pd.concat(parts, ignore_index=True)
     check_rows: list[dict[str, object]] = []
     if inputs.sp500 is not None:
         sp = pd.Series(

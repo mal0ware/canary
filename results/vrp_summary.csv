@@ -1,3 +1,5 @@
-returns,first_month,last_month,version,months,mean,median,t_stat,share_positive,min,min_month
-market,1990-01,2026-08,vrp_trailing,440,110.244,113.855,5.84543,0.868182,-5822.52,2020-03
-market,1990-01,2026-08,vrp_forward,440,100.206,121.766,4.02221,0.838636,-7269.99,2020-02
+returns,first_month,last_month,version,months,mean_iv,mean_rv,mean,median,t_stat,share_positive,min,min_month
+market,1990-01,2026-08,vrp_trailing,440,432.97,322.726,110.244,113.855,5.84543,0.868182,-5822.52,2020-03
+market,1990-01,2026-08,vrp_forward,440,432.97,332.764,100.206,121.766,4.02221,0.838636,-7269.99,2020-02
+market,1990-01,2007-12,vrp_trailing,216,398.875,242.884,155.991,126.547,12.6336,0.912037,-738.44,2000-04
+market,1990-01,2007-12,vrp_forward,216,398.875,248.909,149.965,135.037,9.68384,0.851852,-1029.62,2002-06

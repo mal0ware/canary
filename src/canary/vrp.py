@@ -54,7 +54,8 @@ def vrp_table(vix: pd.Series, log_returns: pd.Series) -> pd.DataFrame:
 
 
 def vrp_summary(table: pd.DataFrame) -> pd.DataFrame:
-    """Mean, median, t-statistic of the mean, and share of positive months, per version."""
+    """Per version: mean implied and realised variance, then the premium's mean, median,
+    t-statistic and share of positive months. Units are annualised percent squared."""
     rows = []
     for col in ("vrp_trailing", "vrp_forward"):
         x = table[col].to_numpy(dtype=np.float64)
@@ -63,6 +64,8 @@ def vrp_summary(table: pd.DataFrame) -> pd.DataFrame:
             {
                 "version": col,
                 "months": n,
+                "mean_iv": float(table["iv"].mean()),
+                "mean_rv": float(table[col.replace("vrp", "rv")].mean()),
                 "mean": float(x.mean()),
                 "median": float(np.median(x)),
                 "t_stat": float(x.mean() / (x.std(ddof=1) / np.sqrt(n))),

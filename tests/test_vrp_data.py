@@ -45,11 +45,18 @@ def test_vrp_table_alignment() -> None:
 
 def test_vrp_summary() -> None:
     table = pd.DataFrame(
-        {"vrp_trailing": [1.0, 2.0, 3.0, -2.0], "vrp_forward": [1.0, 1.0, 1.0, 5.0]},
+        {
+            "iv": [4.0, 4.0, 4.0, 4.0],
+            "rv_trailing": [3.0, 2.0, 1.0, 6.0],
+            "rv_forward": [3.0, 3.0, 3.0, -1.0],
+            "vrp_trailing": [1.0, 2.0, 3.0, -2.0],
+            "vrp_forward": [1.0, 1.0, 1.0, 5.0],
+        },
         index=pd.to_datetime(["2020-01-31", "2020-02-28", "2020-03-31", "2020-04-30"]),
     )
     s = vrp.vrp_summary(table).set_index("version")
     assert s.loc["vrp_trailing", "mean"] == pytest.approx(1.0)
+    assert s.loc["vrp_trailing", "mean_iv"] - s.loc["vrp_trailing", "mean_rv"] == pytest.approx(1.0)
     assert s.loc["vrp_trailing", "share_positive"] == pytest.approx(0.75)
     assert s.loc["vrp_trailing", "min_month"] == "2020-04"
 

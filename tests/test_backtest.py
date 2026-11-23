@@ -34,15 +34,56 @@ def test_kupiec_no_breaches_is_finite() -> None:
     assert res.lr == pytest.approx(-2 * 255 * np.log(0.99))
 
 
+# Kupiec (1995), FEDS working paper 95-24, Table 2: "Maximum sample size for which
+# the null hypothesis p = p* is rejected at the 5 percent level", by number of failures.
+KUPIEC_TABLE_2 = {
+    0.01: {1: 6, 2: 34, 3: 75, 4: 124},
+    0.02: {1: 3, 2: 17, 3: 38, 4: 63},
+    0.03: {2: 11, 3: 26, 4: 44},
+    0.04: {2: 9, 3: 19, 4: 32},
+    0.05: {3: 16, 4: 26},
+}
+# Two printed cells do not follow from Kupiec's own statistic (his expression 6)
+# with the 3.841 cut-off he states. The statistic gives the values on the right.
+KUPIEC_TABLE_2_DIFFERS = {(0.01, 4): 125, (0.03, 4): 42}
+
+
+def _max_rejected_sample(x: int, p: float) -> int:
+    return max(n for n in range(x, 1000) if x / n > p and float(bt.kupiec_lr(n, x, p)) > 3.841)
+
+
+def test_kupiec_table_2_of_the_working_paper() -> None:
+    matched = 0
+    for p, row in KUPIEC_TABLE_2.items():
+        for x, printed in row.items():
+            computed = _max_rejected_sample(x, p)
+            if (p, x) in KUPIEC_TABLE_2_DIFFERS:
+                assert computed == KUPIEC_TABLE_2_DIFFERS[(p, x)]
+                assert abs(computed - printed) <= 2
+            else:
+                assert computed == printed, (p, x)
+                matched += 1
+    assert matched == 14
+
+
+def test_kupiec_one_year_example() -> None:
+    # Kupiec, p. 22: with "three or less failures" in about 250 days, a model whose
+    # true rate is 2% "would escape detection only 26.23 percent of the time".
+    assert stats.binom.cdf(3, 250, 0.02) == pytest.approx(0.2623, abs=2e-4)
+
+
 @pytest.mark.parametrize(
     ("n", "p", "low", "high"),
     [
-        # Non-rejection regions for the number of failures N at the 5% test
-        # level, as tabulated from Kupiec (1995) in Jorion, "Value at Risk"
-        # and the Basel literature. See PAPER.md for what was read.
+        # Non-rejection regions for the number of failures N at the 5% test level,
+        # attributed to Kupiec (1995) and read here from a secondary source
+        # (Nieppola 2009, Table 1). The journal article was not reachable.
         (255, 0.01, None, 6),  # N < 7
         (510, 0.01, 2, 10),  # 1 < N < 11
         (1000, 0.01, 5, 16),  # 4 < N < 17
+        (255, 0.025, 3, 11),  # 2 < N < 12
+        (510, 0.025, 7, 20),  # 6 < N < 21
+        (1000, 0.025, 16, 35),  # 15 < N < 36
         (255, 0.05, 7, 20),  # 6 < N < 21
         (510, 0.05, 17, 35),  # 16 < N < 36
         (1000, 0.05, 38, 64),  # 37 < N < 65

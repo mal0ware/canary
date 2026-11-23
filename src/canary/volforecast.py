@@ -145,52 +145,73 @@ def diebold_mariano(
     return DMResult(float(d.mean()), stat, float(2.0 * stats.norm.sf(abs(stat))), lag, n)
 
 
+def rolling_har_forecasts(
+    rv: FloatArray, window: int, lags: tuple[int, int, int] = (1, 5, 22)
+) -> tuple[FloatArray, npt.NDArray[np.int_]]:
+    """One-day-ahead HAR forecasts of realised variance on a rolling window.
+
+    The forecast for day t is an OLS fit on days t-window .. t-1. A forecast
+    below the smallest realised variance in the window is raised to that value,
+    because QLIKE needs a positive forecast. Returns the forecasts and a 0/1
+    array marking where the floor applied.
+    """
+    m = rv.size - window
+    if m <= 0:
+        raise ValueError("series is not longer than the window")
+    out = np.empty(m)
+    floored = np.zeros(m, dtype=np.int_)
+    for i in range(m):
+        win = rv[i : i + window]
+        f = har_predict(win, har_fit(win, lags), lags)
+        floor = float(win.min())
+        if f < floor:
+            f = floor
+            floored[i] = 1
+        out[i] = f
+    return out, floored
+
+
+def rolling_garch_forecasts(ret: FloatArray, window: int, refit: int = 1) -> FloatArray:
+    """One-day-ahead GARCH(1,1) variance forecasts on a rolling window.
+
+    The forecast for day t uses the demeaned returns of days t-window .. t-1.
+    Parameters are re-estimated every ``refit`` days.
+    """
+    m = ret.size - window
+    if m <= 0:
+        raise ValueError("series is not longer than the window")
+    out = np.empty(m)
+    params: garch.GarchParams | None = None
+    for i in range(m):
+        win = ret[i : i + window]
+        eps = win - win.mean()
+        if params is None or i % refit == 0:
+            params = garch.fit(eps, start=params).params
+        out[i] = garch.forecast_variance(eps, params)
+    return out
+
+
 def rolling_vol_forecasts(
     daily: pd.DataFrame,
     window: int = 1000,
     refit: int = 1,
     lags: tuple[int, int, int] = (1, 5, 22),
 ) -> pd.DataFrame:
-    """One-day-ahead variance forecasts from HAR and GARCH(1,1) on a rolling window.
+    """HAR and GARCH forecasts side by side.
 
-    ``daily`` has columns ``rv`` and ``ret``. The forecast for day t uses days
-    t-window .. t-1. HAR is OLS on realised variance; a forecast below the
-    smallest realised variance in the window is raised to that value, because
-    QLIKE needs a positive forecast. GARCH is fitted to demeaned daily returns
-    every ``refit`` days.
-
-    Returns columns ``rv``, ``ret2`` (squared return), ``har``, ``garch`` and
-    ``har_floored`` (1 where the floor applied).
+    ``daily`` has columns ``rv`` and ``ret``. Returns columns ``rv``, ``ret2``
+    (squared return), ``har``, ``garch`` and ``har_floored``, indexed like
+    ``daily[window:]``.
     """
     rv = daily["rv"].to_numpy(dtype=np.float64)
     ret = daily["ret"].to_numpy(dtype=np.float64)
-    n = rv.size
-    if n <= window:
-        raise ValueError("series is not longer than the window")
-    m = n - window
-    har = np.empty(m)
-    gar = np.empty(m)
-    floored = np.zeros(m, dtype=np.int_)
-    params: garch.GarchParams | None = None
-    for i in range(m):
-        rv_win = rv[i : i + window]
-        beta = har_fit(rv_win, lags)
-        f = har_predict(rv_win, beta, lags)
-        floor = float(rv_win.min())
-        if f < floor:
-            f = floor
-            floored[i] = 1
-        har[i] = f
-        eps = ret[i : i + window] - ret[i : i + window].mean()
-        if params is None or i % refit == 0:
-            params = garch.fit(eps, start=params).params
-        gar[i] = garch.forecast_variance(eps, params)
+    har, floored = rolling_har_forecasts(rv, window, lags)
     return pd.DataFrame(
         {
             "rv": rv[window:],
             "ret2": ret[window:] ** 2,
             "har": har,
-            "garch": gar,
+            "garch": rolling_garch_forecasts(ret, window, refit),
             "har_floored": floored,
         },
         index=daily.index[window:],

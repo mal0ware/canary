@@ -173,19 +173,18 @@ def kupiec_acceptance(n: int, p: float, size: float = 0.05) -> tuple[int, int]:
 
 def simulate_markov_hits(
     n: int, pi01: float, pi11: float, reps: int, rng: np.random.Generator
-) -> IntArray:
+) -> npt.NDArray[np.int8]:
     """Simulate ``reps`` breach series of length ``n`` from a two-state Markov chain.
 
     The first day is drawn from the stationary distribution, whose breach rate
     is pi01 / (1 + pi01 - pi11).
     """
     stationary = pi01 / (1.0 + pi01 - pi11)
-    u = rng.random((n, reps))
-    out = np.empty((n, reps), dtype=np.int_)
-    state = (u[0] < stationary).astype(np.int_)
+    out = np.empty((n, reps), dtype=np.int8)
+    state = rng.random(reps) < stationary
     out[0] = state
     for t in range(1, n):
-        state = (u[t] < np.where(state == 1, pi11, pi01)).astype(np.int_)
+        state = rng.random(reps) < np.where(state, pi11, pi01)
         out[t] = state
     return out
 

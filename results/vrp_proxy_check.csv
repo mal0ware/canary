@@ -1,2 +1,2 @@
 first_day,last_day,days,return_correlation,variance_ratio_market_over_sp500,months,mean_vrp_forward_market,mean_vrp_forward_sp500,mean_vrp_trailing_market,mean_vrp_trailing_sp500
-2016-11-28,2026-09-30,2473,0.995981,1.05457,117,43.9787,62.2061,47.2771,65.7071
+2016-11-28,2026-09-30,2473,0.995981,1.05457,117,50.2046,68.3935,39.6992,58.2244

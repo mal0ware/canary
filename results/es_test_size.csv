@@ -1,0 +1,5 @@
+returns,model,window,alpha,days,replications,null_histories,mean_breach_rate,mean_shortfall_ratio,mean_z1,mean_z2,reject_z1_at_5pct,reject_z2_at_5pct
+normal,hs,1000,0.01,2362,100,200,0.00993226,1.01725,-0.0184728,-0.0114944,0.09,0
+normal,hs,1000,0.01,25338,100,200,0.0100032,1.01249,-0.0138392,-0.0141236,0.73,0
+student_t_5,hs,1000,0.01,2362,100,200,0.00997036,1.02548,-0.0337177,-0.0303189,0.05,0
+student_t_5,hs,1000,0.01,25338,100,200,0.00999684,1.02502,-0.0336203,-0.0331994,0.67,0

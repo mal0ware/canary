@@ -1,3 +1,7 @@
-dataset,days,omega,alpha,beta,persistence,annualised_vol_pct,loglik,converged
-us_market,26338,1.32951e-06,0.103547,0.885597,0.989144,17.5675,88751,True
-btc,3335,4.66367e-05,0.108996,0.861494,0.97049,63.1071,6731.45,True
+dataset,variant,days,omega,alpha,gamma,beta,nu,persistence,annualised_vol_pct,loglik,converged
+us_market,garch_normal,26338,1.32951e-06,0.103547,0,0.885597,,0.989144,17.5675,88751,True
+us_market,garch_t,26338,8.57965e-07,0.0961708,0,0.899881,5.68028,0.996052,23.4004,89654.7,True
+us_market,gjr_normal,26338,1.52455e-06,0.0362674,0.114471,0.890095,,0.983598,15.3047,89035.5,True
+btc,garch_normal,3362,4.17223e-05,0.10375,0,0.870365,,0.974115,63.7318,6783.15,True
+btc,garch_t,3362,1.28728e-05,0.0718669,0,0.928033,3.1971,0.9999,569.556,7174.26,True
+btc,gjr_normal,3362,4.49314e-05,0.0715439,0.0679614,0.865689,,0.971214,62.717,6796.45,True

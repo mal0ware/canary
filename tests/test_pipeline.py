@@ -17,6 +17,9 @@ TINY = pipeline.Config(
     vol_refit=50,
     power_reps=50,
     mc_reps=50,
+    es_reps=50,
+    es_size_reps=3,
+    es_size_sims=20,
     power_sizes=(250,),
     power_rates=(0.01, 0.02),
     power_pi11=(0.01, 0.2),
@@ -39,6 +42,15 @@ def test_tables_are_complete(results: pipeline.Results) -> None:
     assert set(cov["model"]) == set(var.MODELS)
     assert (cov["breaches"] == (cov["breach_rate"] * cov["days"]).round()).all()
     assert len(results.tables["vol_forecast"]) == 4  # two lag sets, two proxies
+    es = results.tables["es_backtest"]
+    assert len(es) == len(cov)
+    assert es["p_z2"].between(0, 1).all()
+    assert es.loc[es["model"] == "fhs", "fz0_dm_stat"].isna().all()
+    assert es.loc[es["model"] != "fhs", "fz0_dm_stat"].notna().all()
+    size = results.tables["es_test_size"]
+    assert len(size) == 4  # two shock distributions, two sample sizes
+    assert size["mean_breach_rate"].between(0.003, 0.03).all()
+    assert size["reject_z2_at_5pct"].between(0, 1).all()
     assert len(results.tables["vrp_summary"]) == 2  # synthetic data start after 2007
     assert len(results.tables["vrp_proxy_check"]) == 1
 
@@ -86,3 +98,18 @@ def test_written_tables_round_trip(results: pipeline.Results, tmp_path: Path) ->
     cov = pd.read_csv(tmp_path / "var_coverage.csv")
     assert cov["p_uc"].between(0, 1).all()
     assert cov["p_ind"].between(0, 1).all()
+
+
+def test_volatility_study_scores_only_days_with_a_measurement(
+    inputs: pipeline.Inputs, results: pipeline.Results
+) -> None:
+    daily = inputs.btc_daily
+    assert daily["rv"].isna().sum() == 4 and daily["ret"].notna().all()
+    assert (daily.index == pd.date_range(daily.index[0], periods=len(daily))).all()
+    row = results.tables["vol_forecast"].iloc[0]
+    # Forecast days start at position 250. Days 400 and 650 have no realised
+    # variance and days 401 and 651 have no HAR forecast.
+    assert row["calendar_days"] == len(daily) - 250
+    assert row["days_without_rv"] == 2 and row["days_without_har_forecast"] == 2
+    assert row["days"] == len(daily) - 250 - 4
+    assert results.tables["vol_forecast_by_year"]["days"].sum() == row["days"]

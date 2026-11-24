@@ -33,7 +33,10 @@ class Config:
     vol_refit: int = 1
     har_lag_sets: tuple[tuple[int, int, int], ...] = ((1, 5, 22), (1, 7, 30))
     power_reps: int = 2000
-    mc_reps: int = 2000
+    mc_reps: int = 10000
+    es_reps: int = 1000
+    es_size_reps: int = 100
+    es_size_sims: int = 200
     power_sizes: tuple[int, ...] = (250, 1000)
     power_rates: tuple[float, ...] = (0.005, 0.0075, 0.01, 0.0125, 0.015, 0.02, 0.03)
     power_pi11: tuple[float, ...] = (0.01, 0.05, 0.10, 0.20, 0.40)
@@ -48,6 +51,9 @@ FAST = Config(
     vol_refit=20,
     power_reps=200,
     mc_reps=200,
+    es_reps=200,
+    es_size_reps=5,
+    es_size_sims=50,
     power_sizes=(250, 1000),
 )
 
@@ -57,7 +63,8 @@ class Inputs:
     """Prepared data.
 
     ``market``     daily simple returns of the US market, decimal
-    ``btc_daily``  frame with ``rv`` (realised variance) and ``ret`` (log return)
+    ``btc_daily``  one row per calendar day with ``rv`` (realised variance, NaN
+                   on a day without enough bars) and ``ret`` (log return)
     ``vix``        VIX close in percent
     ``sp500``      S&P 500 index level, or None
     """
@@ -131,6 +138,129 @@ def coverage_rows(
     return rows
 
 
+def es_rows(
+    forecasts: pd.DataFrame,
+    null: var.NullSums,
+    dataset: str,
+    alphas: tuple[float, ...],
+    reference: str = "fhs",
+) -> list[dict[str, object]]:
+    """Expected-shortfall backtests, one row per model and tail probability.
+
+    Z1 and Z2 of Acerbi and Szekely with p-values from the simulated histories
+    in ``null``, the mean FZ0 loss, and a Diebold-Mariano test of each model's
+    FZ0 loss against the ``reference`` model's.
+    """
+    rows: list[dict[str, object]] = []
+    ret = forecasts["ret"].to_numpy(dtype=np.float64)
+    lag = vf.bartlett_lag(ret.size)
+    for alpha in alphas:
+        losses = {}
+        for model in var.MODELS:
+            v = forecasts[f"var_{model}_{alpha}"].to_numpy(dtype=np.float64)
+            e = forecasts[f"es_{model}_{alpha}"].to_numpy(dtype=np.float64)
+            losses[model] = bt.fz0_loss(ret, v, e, alpha)
+        for model in var.MODELS:
+            v = forecasts[f"var_{model}_{alpha}"].to_numpy(dtype=np.float64)
+            e = forecasts[f"es_{model}_{alpha}"].to_numpy(dtype=np.float64)
+            a = bt.acerbi_szekely(ret, v, e, alpha, null.s[(model, alpha)], null.n[(model, alpha)])
+            if model == reference:
+                dm_stat, dm_p = float("nan"), float("nan")
+            else:
+                dm = vf.diebold_mariano(losses[model], losses[reference], lag, "bartlett")
+                dm_stat, dm_p = dm.stat, dm.p_value
+            rows.append(
+                {
+                    "dataset": dataset,
+                    "alpha": alpha,
+                    "model": model,
+                    "days": ret.size,
+                    "breaches": a.breaches,
+                    "z1": a.z1,
+                    "p_z1": a.p_z1,
+                    "z2": a.z2,
+                    "p_z2": a.p_z2,
+                    "null_histories": int(null.s[(model, alpha)].size),
+                    "fz0_mean": float(losses[model].mean()),
+                    "fz0_minus_reference": float(np.mean(losses[model] - losses[reference])),
+                    "fz0_dm_stat": dm_stat,
+                    "fz0_dm_p": dm_p,
+                    "fz0_dm_lag": lag,
+                    "fz0_reference": reference,
+                }
+            )
+    return rows
+
+
+def es_size_table(config: Config, sample_sizes: tuple[int, ...]) -> pd.DataFrame:
+    """How often the expected-shortfall tests reject historical simulation on iid data.
+
+    The returns are independent draws from one fixed distribution, so a rolling
+    window is the right model and only its sampling error is wrong. Each
+    replication runs historical simulation at the 1% limit and tests it the way
+    the study does, against histories drawn from the windows. A test that
+    rejects much more than 5% of the time here is detecting the error of an
+    expected shortfall estimated from the few points in a window's tail.
+    """
+    w, alpha = config.window, 0.01
+    k = max(int(np.ceil(alpha * w - 1e-12)), 1)
+    rng = np.random.default_rng(config.seed + 4)
+    rows: list[dict[str, object]] = []
+    for name in ("normal", "student_t_5"):
+        for days in sorted(set(sample_sizes)):
+            z1 = np.empty(config.es_size_reps)
+            z2 = np.empty(config.es_size_reps)
+            p1 = np.empty(config.es_size_reps)
+            p2 = np.empty(config.es_size_reps)
+            ratio = np.empty(config.es_size_reps)
+            rate = np.empty(config.es_size_reps)
+            for j in range(config.es_size_reps):
+                if name == "normal":
+                    r = rng.standard_normal(w + days)
+                else:
+                    r = rng.standard_t(5, w + days) * np.sqrt(3.0 / 5.0)
+                windows = np.lib.stride_tricks.sliding_window_view(r, w)[:days]
+                ret = r[w:]
+                limit = np.empty(days)
+                es = np.empty(days)
+                null_s = np.zeros(config.es_size_sims)
+                null_n = np.zeros(config.es_size_sims)
+                for a in range(0, days, 2000):
+                    block = windows[a : a + 2000]
+                    tail = np.partition(block, k - 1, axis=1)[:, :k]
+                    q = tail.max(axis=1)
+                    limit[a : a + 2000] = -q
+                    es[a : a + 2000] = -tail.mean(axis=1)
+                    pick = rng.integers(0, w, (block.shape[0], config.es_size_sims))
+                    x = np.take_along_axis(block, pick, axis=1)
+                    hit = x <= q[:, None]
+                    null_s += np.sum(np.where(hit, x, 0.0) / es[a : a + 2000, None], axis=0)
+                    null_n += hit.sum(axis=0)
+                res = bt.acerbi_szekely(ret, limit, es, alpha, null_s, null_n)
+                z1[j], z2[j], p1[j], p2[j] = res.z1, res.z2, res.p_z1, res.p_z2
+                breach = ret < -limit
+                rate[j] = float(breach.mean())
+                ratio[j] = -ret[breach].mean() / es[breach].mean() if breach.any() else np.nan
+            rows.append(
+                {
+                    "returns": name,
+                    "model": "hs",
+                    "window": w,
+                    "alpha": alpha,
+                    "days": days,
+                    "replications": config.es_size_reps,
+                    "null_histories": config.es_size_sims,
+                    "mean_breach_rate": float(np.mean(rate)),
+                    "mean_shortfall_ratio": float(np.nanmean(ratio)),
+                    "mean_z1": float(np.nanmean(z1)),
+                    "mean_z2": float(np.mean(z2)),
+                    "reject_z1_at_5pct": float(np.nanmean(p1 <= 0.05)),
+                    "reject_z2_at_5pct": float(np.mean(p2 <= 0.05)),
+                }
+            )
+    return pd.DataFrame(rows)
+
+
 def decade_rows(forecasts: pd.DataFrame, alpha: float) -> list[dict[str, object]]:
     """Coverage by calendar decade for one tail probability."""
     rows: list[dict[str, object]] = []
@@ -193,15 +323,20 @@ def power_tables(
     return pd.DataFrame(kup), pd.DataFrame(ind)
 
 
-def bartlett_lag(n: int) -> int:
-    """Truncation lag floor(4 (n/100)^(2/9)), a common rule of thumb."""
-    return int(np.floor(4.0 * (n / 100.0) ** (2.0 / 9.0)))
+bartlett_lag = vf.bartlett_lag
 
 
 def vol_forecast_study(daily: pd.DataFrame, config: Config) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """GARCH(1,1) against HAR on realised variance. Returns (table, forecast frame)."""
+    """GARCH(1,1) against HAR on realised variance. Returns (table, forecast frame).
+
+    ``daily`` has one row per calendar day. GARCH runs on the daily returns,
+    which have no gaps. A day is scored when its realised variance exists and
+    HAR has a forecast for it, so both models are scored on the same days.
+    """
     rv = daily["rv"].to_numpy(dtype=np.float64)
     ret = daily["ret"].to_numpy(dtype=np.float64)
+    if not np.isfinite(ret).all():
+        raise ValueError("daily returns have gaps; GARCH needs one return per calendar day")
     w = config.vol_window
     frame = pd.DataFrame(
         {
@@ -218,7 +353,8 @@ def vol_forecast_study(daily: pd.DataFrame, config: Config) -> tuple[pd.DataFram
         frame[name] = har
         for proxy in ("rv", "ret2"):
             target = frame[proxy].to_numpy(dtype=np.float64)
-            ok = target > 0.0
+            scored = np.isfinite(frame["rv"].to_numpy(dtype=np.float64)) & np.isfinite(har)
+            ok = scored & (target > 0.0)
             loss_g = vf.qlike(target[ok], frame["garch"].to_numpy(dtype=np.float64)[ok])
             loss_h = vf.qlike(target[ok], har[ok])
             n = int(ok.sum())
@@ -243,6 +379,9 @@ def vol_forecast_study(daily: pd.DataFrame, config: Config) -> tuple[pd.DataFram
                     ),
                     "mean_forecast_over_mean_proxy_har": float(har[ok].mean() / target[ok].mean()),
                     "har_forecasts_floored": int(floored.sum()),
+                    "calendar_days": len(frame),
+                    "days_without_rv": int(np.isnan(frame["rv"].to_numpy(dtype=np.float64)).sum()),
+                    "days_without_har_forecast": int(np.isnan(har).sum()),
                 }
             )
     return pd.DataFrame(rows), frame
@@ -258,7 +397,7 @@ def vol_forecast_by_year(frame: pd.DataFrame) -> pd.DataFrame:
             "qlike_har": vf.qlike(rv, frame[har_col].to_numpy(dtype=np.float64)),
         },
         index=frame.index,
-    )
+    ).dropna()
     year = pd.DatetimeIndex(loss.index).year
     out = loss.groupby(year).mean()
     out.insert(0, "days", loss.groupby(year).size())
@@ -312,26 +451,35 @@ def vrp_study(inputs: Inputs) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]
 
 
 def garch_rows(inputs: Inputs) -> pd.DataFrame:
-    """Full-sample GARCH(1,1) estimates, for comparison with the usual magnitudes."""
+    """Full-sample estimates of the three GARCH variants, for comparison with usual magnitudes."""
     rows = []
+    variants: tuple[tuple[str, bool, str], ...] = (
+        ("garch_normal", False, "normal"),
+        ("garch_t", False, "t"),
+        ("gjr_normal", True, "normal"),
+    )
     for name, series in (("us_market", inputs.market), ("btc", inputs.btc_daily["ret"])):
         x = series.to_numpy(dtype=np.float64)
-        fit = garch.fit(x - x.mean())
-        rows.append(
-            {
-                "dataset": name,
-                "days": x.size,
-                "omega": fit.params.omega,
-                "alpha": fit.params.alpha,
-                "beta": fit.params.beta,
-                "persistence": fit.params.persistence,
-                "annualised_vol_pct": float(
-                    np.sqrt(fit.params.unconditional_variance * 252.0) * 100.0
-                ),
-                "loglik": fit.loglik,
-                "converged": fit.converged,
-            }
-        )
+        for variant, asymmetric, dist in variants:
+            fit = garch.fit(x - x.mean(), asymmetric=asymmetric, dist=dist)
+            rows.append(
+                {
+                    "dataset": name,
+                    "variant": variant,
+                    "days": x.size,
+                    "omega": fit.params.omega,
+                    "alpha": fit.params.alpha,
+                    "gamma": fit.params.gamma,
+                    "beta": fit.params.beta,
+                    "nu": fit.params.nu if np.isfinite(fit.params.nu) else float("nan"),
+                    "persistence": fit.params.persistence,
+                    "annualised_vol_pct": float(
+                        np.sqrt(fit.params.unconditional_variance * 252.0) * 100.0
+                    ),
+                    "loglik": fit.loglik,
+                    "converged": fit.converged,
+                }
+            )
     return pd.DataFrame(rows)
 
 
@@ -340,11 +488,15 @@ def run(inputs: Inputs, config: Config) -> Results:
     res = Results()
     main_cfg = var.BacktestConfig(config.window, config.refit, config.alphas)
 
-    us = var.rolling_forecasts(inputs.market, main_cfg)
+    us, us_null = var.rolling_backtest(
+        inputs.market, main_cfg, config.es_reps, np.random.default_rng(config.seed + 2)
+    )
     btc_simple = pd.Series(
         np.expm1(inputs.btc_daily["ret"].to_numpy(dtype=np.float64)), index=inputs.btc_daily.index
     )
-    btc = var.rolling_forecasts(btc_simple, main_cfg)
+    btc, btc_null = var.rolling_backtest(
+        btc_simple, main_cfg, config.es_reps, np.random.default_rng(config.seed + 3)
+    )
     res.frames["var_us"] = us
     res.frames["var_btc"] = btc
 
@@ -352,6 +504,10 @@ def run(inputs: Inputs, config: Config) -> Results:
     rows += coverage_rows(btc, "btc", config.window, config.alphas, config.mc_reps, config.seed + 1)
     res.tables["var_coverage"] = pd.DataFrame(rows)
     res.tables["var_coverage_by_decade"] = pd.DataFrame(decade_rows(us, 0.01))
+    res.tables["es_backtest"] = pd.DataFrame(
+        es_rows(us, us_null, "us_market", config.alphas)
+        + es_rows(btc, btc_null, "btc", config.alphas)
+    )
 
     by_window = {config.window: us}
     for w in config.sensitivity_windows:
@@ -365,6 +521,8 @@ def run(inputs: Inputs, config: Config) -> Results:
         frame = by_window[w]
         sens += coverage_rows(frame[frame.index >= first], "us_market", w, (0.01,))
     res.tables["var_window_sensitivity"] = pd.DataFrame(sens)
+
+    res.tables["es_test_size"] = es_size_table(config, (len(us), len(btc)))
 
     kup, ind = power_tables(config, (len(us), len(btc)))
     res.tables["power_kupiec"] = kup
@@ -425,4 +583,6 @@ def synthetic_inputs(seed: int = 7, days: int = 2200) -> Inputs:
     btc_daily = pd.DataFrame(
         {"rv": (intraday**2).sum(axis=1), "ret": intraday.sum(axis=1)}, index=btc_idx
     )
+    # A few days without realised variance, as an exchange outage leaves them.
+    btc_daily.loc[btc_daily.index[[40, 41, 400, 650]], "rv"] = np.nan
     return Inputs(market=market, btc_daily=btc_daily, vix=vix, sp500=sp500)

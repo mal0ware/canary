@@ -6,6 +6,7 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 from arch import arch_model
+from scipy import stats
 
 from canary import garch
 
@@ -97,3 +98,90 @@ def test_fit_respects_constraints() -> None:
     est = garch.fit(rng.standard_normal(500)).params
     assert est.omega > 0 and est.alpha >= 0 and est.beta >= 0
     assert est.persistence < 1
+
+
+GJR = garch.GarchParams(omega=0.02, alpha=0.03, beta=0.90, gamma=0.10)
+STUDENT = garch.GarchParams(omega=0.02, alpha=0.08, beta=0.90, nu=6.0)
+
+
+def test_gjr_variance_path_matches_naive_loop() -> None:
+    rng = np.random.default_rng(20)
+    eps = rng.standard_normal(400)
+    naive = np.empty(eps.size)
+    naive[0] = 1.1
+    for t in range(1, eps.size):
+        news = GJR.alpha + (GJR.gamma if eps[t - 1] < 0 else 0.0)
+        naive[t] = GJR.omega + news * eps[t - 1] ** 2 + GJR.beta * naive[t - 1]
+    np.testing.assert_allclose(garch.variance_path(eps, GJR, 1.1), naive, rtol=1e-11)
+    # A fall raises the next variance by more than a rise of the same size.
+    up = garch.next_variance(1.0, 1.0, GJR)
+    down = garch.next_variance(-1.0, 1.0, GJR)
+    assert down - up == pytest.approx(GJR.gamma)
+
+
+def test_gjr_persistence_and_unconditional_variance() -> None:
+    assert GJR.persistence == pytest.approx(0.03 + 0.90 + 0.05)
+    eps, _ = garch.simulate(400_000, GJR, np.random.default_rng(21))
+    assert np.var(eps) == pytest.approx(GJR.unconditional_variance, rel=0.08)
+
+
+def test_student_t_loglik_matches_scipy() -> None:
+    # A unit-variance t is scipy's t with scale sqrt((nu - 2) / nu).
+    rng = np.random.default_rng(22)
+    eps = rng.standard_normal(300)
+    sig2 = garch.variance_path(eps, STUDENT, 1.2)
+    scale = np.sqrt(sig2 * (STUDENT.nu - 2.0) / STUDENT.nu)
+    expected = float(np.sum(stats.t.logpdf(eps, STUDENT.nu, scale=scale)))
+    assert garch.loglik(eps, STUDENT, 1.2) == pytest.approx(expected, rel=1e-12)
+
+
+def test_student_t_simulation_has_unit_variance_shocks() -> None:
+    eps, sig2 = garch.simulate(300_000, STUDENT, np.random.default_rng(23))
+    z = eps / np.sqrt(sig2)
+    assert np.var(z) == pytest.approx(1.0, abs=0.03)
+    assert stats.kurtosis(z) > 1.0  # the normal has zero
+
+
+@pytest.mark.parametrize("seed", [30, 31])
+def test_gjr_fit_matches_arch_package(seed: int) -> None:
+    eps, _ = garch.simulate(4000, GJR, np.random.default_rng(seed))
+    mine = garch.fit(eps, asymmetric=True)
+    ref = arch_model(eps, mean="Zero", vol="GARCH", p=1, o=1, q=1, rescale=False).fit(
+        disp="off", backcast=float(np.mean(eps**2))
+    )
+    assert mine.loglik == pytest.approx(float(ref.loglikelihood), abs=0.02)
+    assert mine.params.alpha == pytest.approx(float(ref.params["alpha[1]"]), abs=2e-3)
+    assert mine.params.gamma == pytest.approx(float(ref.params["gamma[1]"]), abs=2e-3)
+    assert mine.params.beta == pytest.approx(float(ref.params["beta[1]"]), abs=2e-3)
+
+
+@pytest.mark.parametrize("seed", [40, 41])
+def test_student_t_fit_matches_arch_package(seed: int) -> None:
+    eps, _ = garch.simulate(4000, STUDENT, np.random.default_rng(seed))
+    mine = garch.fit(eps, dist="t")
+    ref = arch_model(eps, mean="Zero", vol="GARCH", p=1, q=1, dist="t", rescale=False).fit(
+        disp="off", backcast=float(np.mean(eps**2))
+    )
+    assert mine.loglik == pytest.approx(float(ref.loglikelihood), abs=0.02)
+    assert mine.params.alpha == pytest.approx(float(ref.params["alpha[1]"]), abs=2e-3)
+    assert mine.params.beta == pytest.approx(float(ref.params["beta[1]"]), abs=2e-3)
+    assert mine.params.nu == pytest.approx(float(ref.params["nu"]), rel=0.02)
+
+
+def test_extended_fits_recover_simulated_parameters() -> None:
+    eps, _ = garch.simulate(30_000, GJR, np.random.default_rng(50))
+    est = garch.fit(eps, asymmetric=True).params
+    assert est.gamma == pytest.approx(GJR.gamma, abs=0.02)
+    assert est.alpha == pytest.approx(GJR.alpha, abs=0.015)
+    eps, _ = garch.simulate(30_000, STUDENT, np.random.default_rng(51))
+    est = garch.fit(eps, dist="t").params
+    assert est.nu == pytest.approx(STUDENT.nu, rel=0.12)
+    assert est.gamma == 0.0
+
+
+def test_plain_fit_is_unchanged_by_the_extensions() -> None:
+    eps, _ = garch.simulate(2000, TRUE, np.random.default_rng(52))
+    est = garch.fit(eps).params
+    assert est.gamma == 0.0 and np.isinf(est.nu)
+    with pytest.raises(ValueError):
+        garch.fit(eps, dist="cauchy")

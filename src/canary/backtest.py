@@ -9,6 +9,8 @@ A breach series is a 0/1 array: 1 on a day the loss exceeded the forecast limit.
 * :func:`kupiec_power` gives the exact power of Kupiec's test from the binomial
   distribution. :func:`independence_power` simulates the power of LR_ind
   against a first-order Markov alternative.
+* :func:`acerbi_szekely` tests the expected-shortfall forecasts, and
+  :func:`fz0_loss` scores a VaR and ES forecast pair jointly.
 
 Formulas and their locations in the sources are listed in ``PAPER.md``.
 """
@@ -282,3 +284,99 @@ def independence_monte_carlo(
         ge_pairs += int(np.sum(n11 >= observed.n11))
         done += m
     return (ge_lr + 1) / (reps + 1), (ge_pairs + 1) / (reps + 1)
+
+
+@dataclass(frozen=True)
+class ASResult:
+    """The two statistics of Acerbi and Szekely (2014) and their simulated p-values.
+
+    Both have expectation zero when the forecasts are right and are negative
+    when losses beyond the limit are larger, or more frequent, than forecast.
+    A p-value is the share of simulated histories with a statistic at or below
+    the observed one, so a small value says the model understates the risk.
+    """
+
+    breaches: int
+    z1: float
+    z2: float
+    p_z1: float
+    p_z2: float
+
+
+def shortfall_sums(
+    returns: FloatArray, var_forecast: FloatArray, es_forecast: FloatArray
+) -> tuple[FloatArray, FloatArray]:
+    """Sum of return / ES over breach days, and the number of breach days.
+
+    ``returns`` is one history (length T) or several side by side (T by M);
+    the forecasts have length T. A breach is a return below ``-var_forecast``.
+    """
+    x = returns if returns.ndim == 2 else returns[:, None]
+    hit = x < -var_forecast[:, None]
+    s: FloatArray = np.sum(np.where(hit, x, 0.0) / es_forecast[:, None], axis=0)
+    n: FloatArray = np.sum(hit, axis=0).astype(np.float64)
+    return s, n
+
+
+def as_statistics(
+    s: FloatArray, n: FloatArray, days: int, alpha: float
+) -> tuple[FloatArray, FloatArray]:
+    """Z1 and Z2 from the sums of :func:`shortfall_sums`.
+
+    Z1 = S / N + 1, the test conditional on a breach; it is NaN with no breach.
+    Z2 = S / (T alpha) + 1, which also moves with the number of breaches.
+    """
+    with np.errstate(invalid="ignore", divide="ignore"):
+        z1: FloatArray = np.where(n > 0, s / n + 1.0, np.nan)
+    z2: FloatArray = s / (days * alpha) + 1.0
+    return z1, z2
+
+
+def acerbi_szekely(
+    returns: FloatArray,
+    var_forecast: FloatArray,
+    es_forecast: FloatArray,
+    alpha: float,
+    null_s: FloatArray,
+    null_n: FloatArray,
+) -> ASResult:
+    """Expected-shortfall backtest: observed Z1 and Z2 against simulated histories.
+
+    ``null_s`` and ``null_n`` are the sums of :func:`shortfall_sums` for
+    histories drawn from the model's own forecast distributions, with the
+    forecasts held fixed. The observed history counts as one draw.
+    """
+    days = returns.size
+    s, n = shortfall_sums(returns, var_forecast, es_forecast)
+    z1, z2 = as_statistics(s, n, days, alpha)
+    sim_z1, sim_z2 = as_statistics(null_s, null_n, days, alpha)
+    valid = np.isfinite(sim_z1)
+    if np.isfinite(z1[0]):
+        p_z1 = (1 + int(np.sum(sim_z1[valid] <= z1[0]))) / (int(valid.sum()) + 1)
+    else:
+        p_z1 = float("nan")
+    p_z2 = (1 + int(np.sum(sim_z2 <= z2[0]))) / (sim_z2.size + 1)
+    return ASResult(breaches=int(n[0]), z1=float(z1[0]), z2=float(z2[0]), p_z1=p_z1, p_z2=p_z2)
+
+
+def fz0_loss(
+    returns: FloatArray, var_forecast: FloatArray, es_forecast: FloatArray, alpha: float
+) -> FloatArray:
+    """The FZ0 loss of Patton, Ziegel and Chen (2019) for a VaR and ES forecast pair.
+
+    With VaR and ES as positive losses and y the return:
+
+        L = 1[y < -VaR] (-VaR - y) / (alpha ES) + VaR / ES + log(ES) - 1
+
+    Its expectation is smallest at the true VaR and ES, where it equals
+    log(ES). A lower mean loss is the better pair of forecasts. The level
+    depends on the units of the returns; differences between models do not.
+    """
+    if np.any(es_forecast <= 0.0):
+        raise ValueError("ES forecasts must be positive")
+    hit = returns < -var_forecast
+    excess = np.where(hit, -var_forecast - returns, 0.0)
+    out: FloatArray = (
+        excess / (alpha * es_forecast) + var_forecast / es_forecast + np.log(es_forecast) - 1.0
+    )
+    return out

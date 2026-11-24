@@ -149,3 +149,74 @@ def test_shortfall_ratio_is_one_for_perfect_es() -> None:
     )
     assert var.shortfall_ratio(frame, "hs", 0.01) == pytest.approx(1.0)
     assert var.breaches(frame, "hs", 0.01).tolist() == [1, 0, 1, 0]
+
+
+def test_student_t_tail_matches_numerical_integral() -> None:
+    nu, alpha = 5.0, 0.01
+    q, tail = var.student_t_tail(alpha, nu)
+    scale = np.sqrt((nu - 2.0) / nu)
+    assert stats.t.cdf(q, nu, scale=scale) == pytest.approx(alpha)
+    integral, _ = integrate.quad(lambda x: x * stats.t.pdf(x, nu, scale=scale), -np.inf, q)
+    assert tail == pytest.approx(integral / alpha, rel=1e-7)
+    # Unit variance, so the fat tail shows at 1%: both numbers are beyond the normal's.
+    zq, ztail = var.normal_tail(alpha)
+    assert q < zq and tail < ztail
+
+
+def test_student_t_tail_tends_to_the_normal() -> None:
+    q, tail = var.student_t_tail(0.05, 190.0)
+    zq, ztail = var.normal_tail(0.05)
+    assert q == pytest.approx(zq, abs=0.01)
+    assert tail == pytest.approx(ztail, abs=0.02)
+    v, e = var.student_t_var_es(0.001, 0.02, 190.0, 0.05)
+    vn, en = var.normal_var_es(0.001, 0.02, 0.05)
+    assert v == pytest.approx(vn, rel=0.01) and e == pytest.approx(en, rel=0.01)
+
+
+def test_null_simulation_does_not_change_forecasts(
+    garch_returns: pd.Series, forecasts: pd.DataFrame
+) -> None:
+    short = garch_returns.iloc[:700]
+    cfg = var.BacktestConfig(window=500, refit=50)
+    frame, null = var.rolling_backtest(short, cfg, 50, np.random.default_rng(0))
+    pd.testing.assert_frame_equal(frame, forecasts.iloc[:200])
+    assert set(null.s) == {(m, a) for m in var.MODELS for a in cfg.alphas}
+    assert all(arr.shape == (50,) for arr in null.s.values())
+    with pytest.raises(ValueError):
+        var.rolling_backtest(short, cfg, 50)
+
+
+def test_expected_shortfall_backtest_on_garch_data(garch_returns: pd.Series) -> None:
+    # The data are GARCH with normal shocks. The GARCH-normal model is right up
+    # to estimation error and is not rejected. Reporting half the VaR and half
+    # the shortfall is rejected.
+    cfg = var.BacktestConfig(window=500, refit=50, alphas=(0.05,))
+    frame, null = var.rolling_backtest(garch_returns, cfg, 300, np.random.default_rng(1))
+    ret = frame["ret"].to_numpy()
+    v = frame["var_garch_normal_0.05"].to_numpy()
+    e = frame["es_garch_normal_0.05"].to_numpy()
+    key = ("garch_normal", 0.05)
+    good = bt.acerbi_szekely(ret, v, e, 0.05, null.s[key], null.n[key])
+    assert good.p_z1 > 0.01 and good.p_z2 > 0.01
+    # A model whose volatility is half the true one, simulated under itself:
+    # its histories are the honest ones scaled by a half, so breach counts are
+    # the same and each return / ES term is unchanged.
+    bad = bt.acerbi_szekely(ret, 0.5 * v, 0.5 * e, 0.05, null.s[key], null.n[key])
+    assert bad.z2 < good.z2
+    assert bad.p_z2 == pytest.approx(1 / 301)
+
+
+def test_null_simulation_of_empirical_models_has_the_stated_rate() -> None:
+    # Draws from a window of 200 values at the 5% limit: 10 of the 200 are at
+    # or below it, so simulated breaches come at 5% and Z2 has mean zero. A
+    # strict inequality would give 9 in 200.
+    rng = np.random.default_rng(6)
+    returns = pd.Series(rng.standard_normal(800) * 0.01)
+    cfg = var.BacktestConfig(window=200, refit=300, alphas=(0.05,))
+    frame, null = var.rolling_backtest(returns, cfg, 400, np.random.default_rng(7))
+    days = len(frame)
+    for model in ("hs", "fhs", "fhs_gjr"):
+        key = (model, 0.05)
+        assert null.n[key].mean() / days == pytest.approx(0.05, abs=0.002)
+        _, z2 = bt.as_statistics(null.s[key], null.n[key], days, 0.05)
+        assert z2.mean() == pytest.approx(0.0, abs=0.02)

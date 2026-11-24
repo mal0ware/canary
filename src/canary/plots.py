@@ -28,7 +28,9 @@ MODEL_COLORS = {
     "hs": "#2a78d6",
     "normal": "#eb6834",
     "garch_normal": "#1baf7a",
+    "garch_t": "#8a5fd3",
     "fhs": "#eda100",
+    "fhs_gjr": "#d6457a",
 }
 BLUE_RAMP = ("#86b6ef", "#5598e7", "#2a78d6", "#1c5cab", "#0d366b")
 
@@ -60,7 +62,7 @@ def fig_breaches(res: Results, out: Path, alpha: float = 0.01) -> None:
     models = list(reversed(var.MODELS))
     labels = [var.MODEL_LABELS[m] for m in models]
     colors = [MODEL_COLORS[m] for m in models]
-    fig, axes = plt.subplots(1, 2, figsize=(9.6, 3.4), sharey=True, layout="constrained")
+    fig, axes = plt.subplots(1, 2, figsize=(9.6, 4.0), sharey=True, layout="constrained")
     panels = (
         ("breach_rate", "Days the limit was breached (%)"),
         ("pi11", "Breached again the next day (%)"),
@@ -174,7 +176,7 @@ def fig_vol(res: Results, out: Path) -> None:
         rv, frame[har_col].to_numpy(dtype=np.float64)
     )
     fig, ax = plt.subplots(figsize=(9.6, 3.6), layout="constrained")
-    ax.plot(frame.index, np.cumsum(diff), color=MODEL_COLORS["hs"], linewidth=2.0)
+    ax.plot(frame.index, np.cumsum(np.nan_to_num(diff)), color=MODEL_COLORS["hs"], linewidth=2.0)
     ax.axhline(0.0, color=AXIS, linewidth=1.0)
     ax.set_ylabel("Cumulative QLIKE, GARCH minus HAR")
     ax.set_title(
@@ -205,7 +207,7 @@ def fig_vrp(res: Results, out: Path, floor: float = -1500.0) -> None:
             f"the lowest is {y[worst]:,.0f} ({x[worst]:%b %Y})."
         )
     ax.set_title(
-        "Variance risk premium by month: VIX² minus the variance of the next 21 trading days."
+        "Variance risk premium by month: VIX² minus the variance of the next 30 calendar days."
         + note,
         fontsize=9.5,
         loc="left",

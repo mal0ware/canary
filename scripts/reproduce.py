@@ -43,7 +43,8 @@ def load_inputs(data_dir: Path) -> tuple[pipeline.Inputs, pd.DataFrame]:
     digest = hashlib.sha256()
     for path in sorted((data_dir / data.BTC_DIR).glob("*.zip")):
         digest.update(sha256(path).encode())
-    calendar = pd.date_range(btc_daily.index[0], btc_daily.index[-1])
+    no_rv = int(btc_daily["rv"].isna().sum())
+    rescaled = int((btc_daily["rv"].notna() & (btc_daily["n"] < data.BARS_PER_DAY_5M)).sum())
     manifest = pd.DataFrame(
         [
             {
@@ -78,8 +79,8 @@ def load_inputs(data_dir: Path) -> tuple[pipeline.Inputs, pd.DataFrame]:
                 "last": str(btc_daily.index[-1])[:10],
                 "note": (
                     f"{len(bars)} five-minute bars; "
-                    f"{len(calendar) - len(btc_daily)} days dropped for missing bars; "
-                    f"{int((btc_daily['n'] < data.BARS_PER_DAY_5M).sum())} kept days rescaled; "
+                    f"{no_rv} days without realised variance for missing bars; "
+                    f"{rescaled} days rescaled; "
                     "sha256 is of the archive hashes in name order"
                 ),
             },

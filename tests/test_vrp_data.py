@@ -10,18 +10,37 @@ from canary import data, vrp
 
 
 def test_realized_variance_units() -> None:
-    # A constant 1% daily move is 15.87% annualised volatility: variance 252 in percent squared.
-    r = pd.Series(np.full(50, 0.01))
-    rv = vrp.realized_variance_annualised(r, 21)
-    assert rv.iloc[-1] == pytest.approx(252.0)
-    assert np.sqrt(rv.iloc[-1]) == pytest.approx(15.8745, abs=1e-3)
+    # A constant 1% move every calendar day: 30 squared returns in 30 days,
+    # annualised by 365 / 30, is a variance of 365 in percent squared.
+    idx = pd.date_range("2020-01-01", periods=100)
+    trailing, forward = vrp.realized_variance_calendar(pd.Series(np.full(100, 0.01), index=idx))
+    assert trailing.iloc[-1] == pytest.approx(365.0)
+    assert forward.iloc[0] == pytest.approx(365.0)
+    # No value where the series does not reach across the 30 days.
+    assert trailing.iloc[:30].isna().all() and trailing.iloc[30:].notna().all()
+    assert forward.iloc[-30:].isna().all() and forward.iloc[:-30].notna().all()
+
+
+def test_realized_variance_counts_trading_days_in_the_calendar_span() -> None:
+    # Business days only. The span is 30 calendar days whatever the number of
+    # trading days inside it, which is what VIX covers.
+    idx = pd.bdate_range("2020-01-01", periods=120)
+    r = pd.Series(np.random.default_rng(1).standard_normal(120) * 0.01, index=idx)
+    trailing, forward = vrp.realized_variance_calendar(r)
+    day = idx[60]
+    back = r[(idx > day - pd.Timedelta(days=30)) & (idx <= day)]
+    ahead = r[(idx > day) & (idx <= day + pd.Timedelta(days=30))]
+    assert len(back) in (20, 21, 22) and len(ahead) in (20, 21, 22)
+    assert trailing[day] == pytest.approx(float((back**2).sum()) * 365 / 30 * 1e4)
+    assert forward[day] == pytest.approx(float((ahead**2).sum()) * 365 / 30 * 1e4)
 
 
 def test_vrp_is_zero_when_vix_equals_realized_volatility() -> None:
-    idx = pd.bdate_range("2020-01-01", periods=200)
+    idx = pd.date_range("2020-01-01", periods=200)
     r = pd.Series(np.tile([0.01, -0.01], 100), index=idx)
-    vix = pd.Series(np.sqrt(252.0), index=idx)
+    vix = pd.Series(np.sqrt(365.0), index=idx)
     table = vrp.vrp_table(vix, r)
+    assert len(table) > 3
     assert np.allclose(table["vrp_trailing"], 0.0)
     assert np.allclose(table["vrp_forward"], 0.0)
 
@@ -33,14 +52,43 @@ def test_vrp_table_alignment() -> None:
     vix = pd.Series(20.0, index=idx)
     table = vrp.vrp_table(vix, r)
     day = table.index[1]
-    pos = idx.get_loc(day)
-    trailing = np.sum(r.to_numpy()[pos - 20 : pos + 1] ** 2) * 12 * 1e4
-    forward = np.sum(r.to_numpy()[pos + 1 : pos + 22] ** 2) * 12 * 1e4
-    assert table.loc[day, "rv_trailing"] == pytest.approx(trailing)
-    assert table.loc[day, "rv_forward"] == pytest.approx(forward)
+    ahead = r[(idx > day) & (idx <= day + pd.Timedelta(days=30))]
+    assert table.loc[day, "rv_forward"] == pytest.approx(float((ahead**2).sum()) * 365 / 30 * 1e4)
     assert table.loc[day, "iv"] == 400.0
-    # one row per month, each the last trading day with a full forward window
+    # one row per month, each the last trading day of its month
     assert table.index.to_period("M").is_unique
+    assert day == idx[idx.to_period("M") == day.to_period("M")][-1]
+
+
+def test_newey_west_t_statistic() -> None:
+    rng = np.random.default_rng(2)
+    x = rng.standard_normal(400) + 0.2
+    iid = x.mean() / (x.std(ddof=0) / np.sqrt(x.size))
+    assert vrp.newey_west_t(x, 0) == pytest.approx(iid)
+    # A persistent series: the iid standard error is too small.
+    e = rng.standard_normal(5000)
+    y = np.empty(5000)
+    y[0] = e[0]
+    for t in range(1, 5000):
+        y[t] = 0.7 * y[t - 1] + e[t]
+    y += 0.3
+    assert abs(vrp.newey_west_t(y, 12)) < 0.6 * abs(vrp.newey_west_t(y, 0))
+
+
+def test_newey_west_size_on_a_persistent_series() -> None:
+    # AR(1) with coefficient 0.5 and mean zero, 440 points like the monthly
+    # sample. The iid t-test rejects far too often. Newey-West is closer to 5%.
+    rng = np.random.default_rng(3)
+    reps, n, lag = 1500, 440, 5
+    e = rng.standard_normal((reps, n + 50))
+    y = np.zeros_like(e)
+    for t in range(1, n + 50):
+        y[:, t] = 0.5 * y[:, t - 1] + e[:, t]
+    y = y[:, 50:]
+    iid = np.mean([abs(vrp.newey_west_t(row, 0)) > 1.96 for row in y])
+    nw = np.mean([abs(vrp.newey_west_t(row, lag)) > 1.96 for row in y])
+    assert iid > 0.20
+    assert 0.04 < nw < 0.11
 
 
 def test_vrp_summary() -> None:
@@ -59,6 +107,8 @@ def test_vrp_summary() -> None:
     assert s.loc["vrp_trailing", "mean_iv"] - s.loc["vrp_trailing", "mean_rv"] == pytest.approx(1.0)
     assert s.loc["vrp_trailing", "share_positive"] == pytest.approx(0.75)
     assert s.loc["vrp_trailing", "min_month"] == "2020-04"
+    assert s.loc["vrp_trailing", "nw_lag"] == 1
+    assert np.isfinite(s.loc["vrp_trailing", "t_stat_newey_west"])
 
 
 FRENCH_SAMPLE = """This file was created by using the 202609 CRSP database.

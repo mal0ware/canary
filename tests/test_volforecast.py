@@ -44,13 +44,76 @@ def test_daily_realized_variance_handles_gaps() -> None:
     # Remove one bar from day 2 (two returns lost) and most of day 3.
     drop = list(close.index[30:31]) + list(close.index[50:70])
     out = vf.daily_realized_variance(close.drop(drop), bars_per_day=24, min_coverage=0.9)
-    assert pd.Timestamp("2021-01-03") not in out.index
+    # Day 3 stays as a row, with a return and no realised variance.
+    assert list(out.index) == list(pd.date_range("2021-01-02", periods=3))
+    day3 = out.loc[pd.Timestamp("2021-01-03")]
+    assert np.isnan(day3["rv"]) and day3["n"] == 3
+    logp = np.log(close.to_numpy())
+    assert day3["ret"] == pytest.approx(logp[71] - logp[47])
     day2 = out.loc[pd.Timestamp("2021-01-02")]
     assert day2["n"] == 22
-    logp = np.log(close.to_numpy())
     r = np.diff(logp)[23:47]
     kept = np.delete(r, [6, 7])  # returns into bar 30 and out of it
     assert day2["rv"] == pytest.approx(np.sum(kept**2) * 24 / 22)
+    # Daily returns still add up to the whole move, so nothing is skipped.
+    assert out["ret"].sum() == pytest.approx(logp[-1] - logp[23])
+
+
+def test_daily_realized_variance_keeps_a_day_with_no_bars() -> None:
+    close = _bars(5, 24, np.random.default_rng(12))
+    out = vf.daily_realized_variance(close.drop(close.index[48:72]), bars_per_day=24)
+    assert len(out) == 4
+    gone = out.loc[pd.Timestamp("2021-01-03")]
+    assert np.isnan(gone["rv"]) and np.isnan(gone["ret"]) and gone["n"] == 0
+    # The day after has no previous close either, so its return is unknown.
+    assert np.isnan(out.loc[pd.Timestamp("2021-01-04"), "ret"])
+
+
+def test_har_design_with_missing_days() -> None:
+    rv = np.arange(1.0, 31.0)
+    rv[[18, 25]] = np.nan  # values 19 and 26
+    x = vf.har_design(rv)
+    # Day 21 (value 22): the week is days 17..21, of which day 18 is missing.
+    assert x[21, 1] == 22.0
+    assert x[21, 2] == pytest.approx(np.mean([18, 20, 21, 22]))
+    assert x[21, 3] == pytest.approx((np.arange(1, 23).sum() - 19) / 21)
+    # No row on a day without a value; the rows around it are in place.
+    assert np.isnan(x[25, 1:]).all()
+    assert x[26, 1] == 27.0
+    assert x[26, 2] == pytest.approx(np.mean([23, 24, 25, 27]))
+
+
+def test_gap_is_not_treated_as_consecutive() -> None:
+    # Dropping the missing day and closing the series up, as the first version
+    # did, pairs the day before the gap with the day after it. Keeping the
+    # NaN leaves that pair out and keeps every lag at its calendar distance.
+    rng = np.random.default_rng(13)
+    rv = rng.random(200) + 0.5
+    rv[100] = np.nan
+    x = vf.har_design(rv)
+    xs, ys = x[21:-1], rv[22:]
+    ok = np.isfinite(xs).all(axis=1) & np.isfinite(ys)
+    assert ok.sum() == len(ys) - 2  # the pair into the gap and the pair out of it
+    direct, *_ = np.linalg.lstsq(xs[ok], ys[ok], rcond=None)
+    np.testing.assert_allclose(vf.har_fit(rv), direct)
+    closed_up = vf.har_fit(rv[np.isfinite(rv)])
+    assert not np.allclose(closed_up, direct)
+    # Week ending two days after the gap: four values present, by position.
+    assert x[102, 2] == pytest.approx(np.mean(rv[[98, 99, 101, 102]]))
+
+
+def test_rolling_har_forecasts_with_missing_days() -> None:
+    rng = np.random.default_rng(14)
+    rv = rng.random(140) + 0.5
+    rv[[50, 119]] = np.nan
+    out, floored = vf.rolling_har_forecasts(rv, window=100)
+    assert out.shape == (40,) and floored.shape == (40,)
+    # Position 120 follows a missing day, so there is no forecast for it.
+    assert np.isnan(out[20])
+    assert np.isfinite(np.delete(out, 20)).all()
+    assert out[0] == pytest.approx(
+        max(vf.har_predict(rv[:100], vf.har_fit(rv[:100])), np.nanmin(rv[:100]))
+    )
 
 
 def test_har_design_windows() -> None:

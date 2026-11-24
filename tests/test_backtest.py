@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import numpy as np
 import pytest
 from scipy import stats
@@ -43,27 +45,50 @@ KUPIEC_TABLE_2 = {
     0.04: {2: 9, 3: 19, 4: 32},
     0.05: {3: 16, 4: 26},
 }
-# Two printed cells do not follow from Kupiec's own statistic (his expression 6)
-# with the 3.841 cut-off he states. The statistic gives the values on the right.
-KUPIEC_TABLE_2_DIFFERS = {(0.01, 4): 125, (0.03, 4): 42}
 
 
-def _max_rejected_sample(x: int, p: float) -> int:
-    return max(n for n in range(x, 1000) if x / n > p and float(bt.kupiec_lr(n, x, p)) > 3.841)
+def _lr_reference(n: int, x: int, p: float) -> float:
+    """Kupiec's statistic from scipy's binomial log-pmf, sharing no code with canary.
+
+    The binomial coefficient cancels in the ratio, so twice the difference of
+    the log-pmf at the sample rate and at the stated rate is expression (6).
+    """
+    return float(2.0 * (stats.binom.logpmf(x, n, x / n) - stats.binom.logpmf(x, n, p)))
+
+
+def _lr_code(n: int, x: int, p: float) -> float:
+    return float(bt.kupiec_lr(n, x, p))
+
+
+def _max_rejected_sample(x: int, p: float, lr: Callable[[int, int, float], float]) -> int:
+    return max(n for n in range(x, 1000) if x / n > p and lr(n, x, p) > 3.841)
+
+
+def test_kupiec_lr_matches_independent_reference() -> None:
+    for p in (0.01, 0.025, 0.05):
+        for n in (50, 125, 255, 1000, 25338):
+            for x in (1, 2, 4, 7, 20, 49):
+                assert _lr_code(n, x, p) == pytest.approx(
+                    max(_lr_reference(n, x, p), 0.0), rel=1e-9, abs=1e-9
+                )
 
 
 def test_kupiec_table_2_of_the_working_paper() -> None:
-    matched = 0
+    # The printed table is compared with the scipy reference, and the code with
+    # the reference, so no number here is the code checked against itself.
+    differs = {}
     for p, row in KUPIEC_TABLE_2.items():
         for x, printed in row.items():
-            computed = _max_rejected_sample(x, p)
-            if (p, x) in KUPIEC_TABLE_2_DIFFERS:
-                assert computed == KUPIEC_TABLE_2_DIFFERS[(p, x)]
-                assert abs(computed - printed) <= 2
-            else:
-                assert computed == printed, (p, x)
-                matched += 1
-    assert matched == 14
+            reference = _max_rejected_sample(x, p, _lr_reference)
+            assert _max_rejected_sample(x, p, _lr_code) == reference, (p, x)
+            if reference != printed:
+                differs[(p, x)] = (printed, reference)
+    # 14 of the 16 printed cells follow from expression (6) with the 3.841 cut-off.
+    assert differs == {(0.01, 4): (124, 125), (0.03, 4): (44, 42)}
+    # The two that do not: 4 failures in 125 days still reject at 1%, and 4 in
+    # 44 days do not reject at 3%.
+    assert _lr_reference(125, 4, 0.01) == pytest.approx(3.867, abs=5e-4)
+    assert _lr_reference(44, 4, 0.03) == pytest.approx(3.68, abs=5e-3)
 
 
 def test_kupiec_one_year_example() -> None:
@@ -235,3 +260,92 @@ def test_no_pairs_can_reject_in_a_long_sample() -> None:
     assert res.n11 == 0 and res.p_ind < 0.05
     _, p_pairs = bt.independence_monte_carlo(hits, 300, np.random.default_rng(8))
     assert p_pairs == 1.0
+
+
+def test_shortfall_sums_hand_value() -> None:
+    ret = np.array([-0.03, 0.01, -0.05, 0.0])
+    v = np.full(4, 0.02)
+    e = np.full(4, 0.04)
+    s, n = bt.shortfall_sums(ret, v, e)
+    assert n[0] == 2
+    assert s[0] == pytest.approx(-0.03 / 0.04 - 0.05 / 0.04)
+    z1, z2 = bt.as_statistics(s, n, 4, 0.5)
+    assert z1[0] == pytest.approx(-2.0 / 2 + 1.0)  # mean loss on breach days equals ES
+    assert z2[0] == pytest.approx(-2.0 / (4 * 0.5) + 1.0)
+
+
+def _normal_forecasts(n: int, alpha: float) -> tuple[bt.FloatArray, bt.FloatArray]:
+    z = float(stats.norm.ppf(alpha))
+    return np.full(n, -z), np.full(n, float(stats.norm.pdf(z)) / alpha)
+
+
+def test_acerbi_szekely_statistics_have_mean_zero_for_a_correct_model() -> None:
+    rng = np.random.default_rng(20)
+    n, alpha = 1000, 0.025
+    v, e = _normal_forecasts(n, alpha)
+    s, cnt = bt.shortfall_sums(rng.standard_normal((n, 4000)), v, e)
+    z1, z2 = bt.as_statistics(s, cnt, n, alpha)
+    assert np.nanmean(z1) == pytest.approx(0.0, abs=0.004)
+    assert np.mean(z2) == pytest.approx(0.0, abs=0.012)
+
+
+def test_acerbi_szekely_size_under_the_null() -> None:
+    # A correct model is rejected at the 5% level about 5% of the time.
+    rng = np.random.default_rng(21)
+    n, alpha, reps, sims = 500, 0.05, 800, 199
+    v, e = _normal_forecasts(n, alpha)
+    rej1 = rej2 = 0
+    for _ in range(reps):
+        null_s, null_n = bt.shortfall_sums(rng.standard_normal((n, sims)), v, e)
+        res = bt.acerbi_szekely(rng.standard_normal(n), v, e, alpha, null_s, null_n)
+        rej1 += res.p_z1 <= 0.05
+        rej2 += res.p_z2 <= 0.05
+    assert 0.03 < rej1 / reps < 0.075
+    assert 0.03 < rej2 / reps < 0.075
+
+
+def test_acerbi_szekely_rejects_a_normal_model_on_fat_tailed_data() -> None:
+    rng = np.random.default_rng(22)
+    n, alpha, sims = 5000, 0.01, 499
+    v, e = _normal_forecasts(n, alpha)
+    null_s, null_n = bt.shortfall_sums(rng.standard_normal((n, sims)), v, e)
+    fat = rng.standard_t(3, n) / np.sqrt(3.0)  # unit variance
+    res = bt.acerbi_szekely(fat, v, e, alpha, null_s, null_n)
+    assert res.z1 < 0 and res.z2 < 0
+    assert res.p_z1 == pytest.approx(1 / 500)
+    assert res.p_z2 == pytest.approx(1 / 500)
+    # Forecasts that overstate the risk are not rejected: the test is one-sided.
+    res = bt.acerbi_szekely(0.5 * rng.standard_normal(n), v, e, alpha, null_s, null_n)
+    assert res.p_z2 > 0.9
+
+
+def test_fz0_hand_value() -> None:
+    ret = np.array([-0.05, 0.01])
+    v = np.array([0.02, 0.02])
+    e = np.array([0.04, 0.04])
+    loss = bt.fz0_loss(ret, v, e, 0.1)
+    assert loss[0] == pytest.approx(0.03 / (0.1 * 0.04) + 0.5 + np.log(0.04) - 1.0)
+    assert loss[1] == pytest.approx(0.5 + np.log(0.04) - 1.0)
+    with pytest.raises(ValueError):
+        bt.fz0_loss(ret, v, np.array([0.04, 0.0]), 0.1)
+
+
+def test_fz0_expected_loss_at_the_truth_is_log_es() -> None:
+    # E[1(y < -VaR)(-VaR - y)] = alpha (ES - VaR), so the expected loss is log(ES).
+    rng = np.random.default_rng(23)
+    alpha = 0.05
+    y = rng.standard_normal(2_000_000)
+    v, e = _normal_forecasts(1, alpha)
+    loss = bt.fz0_loss(y, np.full(y.size, v[0]), np.full(y.size, e[0]), alpha)
+    assert loss.mean() == pytest.approx(np.log(e[0]), abs=0.003)
+
+
+def test_fz0_is_minimised_at_the_true_var_and_es() -> None:
+    rng = np.random.default_rng(24)
+    alpha = 0.05
+    y = rng.standard_normal(400_000)
+    v0, e0 = (float(a[0]) for a in _normal_forecasts(1, alpha))
+    ones = np.ones(y.size)
+    best = bt.fz0_loss(y, v0 * ones, e0 * ones, alpha).mean()
+    for dv, de in ((0.8, 1.0), (1.2, 1.0), (1.0, 0.85), (1.0, 1.2), (1.15, 1.15), (0.9, 0.9)):
+        assert bt.fz0_loss(y, dv * v0 * ones, de * e0 * ones, alpha).mean() > best
